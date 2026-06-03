@@ -301,6 +301,12 @@ def solve_problem(prob_id):
             cur.execute("UPDATE problems SET status='solved' WHERE id=%s", (prob_id,))
             conn.commit()
 
+def get_photos(obj_id):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM photos WHERE object_id=%s ORDER BY created_at DESC", (obj_id,))
+            return cur.fetchall()
+
 def add_photo(obj_id, uid, file_id, caption):
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -825,6 +831,7 @@ async def show_status(update, uid):
         [InlineKeyboardButton("📜 История",  callback_data="history"),
          InlineKeyboardButton("⚠️ Проблемы", callback_data="problems")],
     ]
+    buttons.append([InlineKeyboardButton("🖼 Фото объекта", callback_data="photos")])
     if is_admin(uid):
         buttons.append([
             InlineKeyboardButton("📄 PDF",       callback_data="exp:pdf"),
@@ -1339,6 +1346,25 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif data == "problems":
         await show_problems(q.message, uid)
+
+    elif data == "photos":
+        obj = get_current_obj(uid)
+        if not obj:
+            await q.message.reply_text("Объект не выбран.")
+            return
+        photos = get_photos(obj['id'])
+        if not photos:
+            await q.message.reply_text(f"🖼 Фото по «{obj['name']}» пока нет.\n\nОтправьте фото боту — оно привяжется к объекту.")
+            return
+        await q.message.reply_text(f"🖼 *Фото объекта «{obj['name']}»* — {len(photos)} шт.\nПоказываю последние 5:", parse_mode="Markdown")
+        for p in photos[:5]:
+            caption = f"📅 {fmt(p['created_at'])}"
+            if p.get('caption'):
+                caption += f"\n📝 {p['caption']}"
+            try:
+                await q.message.reply_photo(p['file_id'], caption=caption)
+            except Exception as e:
+                logger.error(f"Photo send error: {e}")
 
     elif data.startswith("exp:"):
         obj = get_current_obj(uid)
