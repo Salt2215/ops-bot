@@ -116,6 +116,23 @@ def init_db():
                     caption TEXT DEFAULT '',
                     created_at TIMESTAMP DEFAULT NOW()
                 );
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id SERIAL PRIMARY KEY,
+                    object_id INT REFERENCES objects(id) ON DELETE CASCADE,
+                    worker_uid BIGINT,
+                    created_by BIGINT,
+                    title TEXT,
+                    status TEXT DEFAULT 'open',
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
+                CREATE TABLE IF NOT EXISTS material_requests (
+                    id SERIAL PRIMARY KEY,
+                    object_id INT REFERENCES objects(id) ON DELETE CASCADE,
+                    worker_uid BIGINT,
+                    text TEXT,
+                    status TEXT DEFAULT 'new',
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
                 CREATE TABLE IF NOT EXISTS locations (
                     id SERIAL PRIMARY KEY,
                     object_id INT REFERENCES objects(id) ON DELETE CASCADE,
@@ -341,6 +358,88 @@ def add_chat(uid, obj_id, role, content):
             cur.execute("INSERT INTO chat_history (uid,object_id,role,content) VALUES (%s,%s,%s,%s)", (uid, obj_id, role, content))
             conn.commit()
 
+def create_task(obj_id, worker_uid, created_by, title):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO tasks (object_id,worker_uid,created_by,title) VALUES (%s,%s,%s,%s) RETURNING id",
+                        (obj_id, worker_uid, created_by, title))
+            task_id = cur.fetchone()['id']
+            conn.commit()
+            return task_id
+
+def get_tasks(worker_uid, status=None):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            if status:
+                cur.execute("""
+                    SELECT t.*, o.name as obj_name FROM tasks t
+                    JOIN objects o ON o.id=t.object_id
+                    WHERE t.worker_uid=%s AND t.status=%s ORDER BY t.created_at DESC
+                """, (worker_uid, status))
+            else:
+                cur.execute("""
+                    SELECT t.*, o.name as obj_name FROM tasks t
+                    JOIN objects o ON o.id=t.object_id
+                    WHERE t.worker_uid=%s ORDER BY t.created_at DESC
+                """, (worker_uid,))
+            return cur.fetchall()
+
+def get_all_tasks_for_admin(obj_id=None):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            if obj_id:
+                cur.execute("""
+                    SELECT t.*, o.name as obj_name, u.name as worker_name FROM tasks t
+                    JOIN objects o ON o.id=t.object_id
+                    JOIN users u ON u.uid=t.worker_uid
+                    WHERE t.object_id=%s ORDER BY t.created_at DESC
+                """, (obj_id,))
+            else:
+                cur.execute("""
+                    SELECT t.*, o.name as obj_name, u.name as worker_name FROM tasks t
+                    JOIN objects o ON o.id=t.object_id
+                    JOIN users u ON u.uid=t.worker_uid
+                    ORDER BY t.created_at DESC LIMIT 30
+                """)
+            return cur.fetchall()
+
+def complete_task(task_id):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE tasks SET status='done' WHERE id=%s", (task_id,))
+            conn.commit()
+
+def add_material_request(obj_id, worker_uid, text):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO material_requests (object_id,worker_uid,text) VALUES (%s,%s,%s)", (obj_id, worker_uid, text))
+            conn.commit()
+
+def get_material_requests(status=None):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            if status:
+                cur.execute("""
+                    SELECT mr.*, o.name as obj_name, u.name as worker_name FROM material_requests mr
+                    JOIN objects o ON o.id=mr.object_id
+                    JOIN users u ON u.uid=mr.worker_uid
+                    WHERE mr.status=%s ORDER BY mr.created_at DESC
+                """, (status,))
+            else:
+                cur.execute("""
+                    SELECT mr.*, o.name as obj_name, u.name as worker_name FROM material_requests mr
+                    JOIN objects o ON o.id=mr.object_id
+                    JOIN users u ON u.uid=mr.worker_uid
+                    ORDER BY mr.created_at DESC LIMIT 30
+                """)
+            return cur.fetchall()
+
+def close_material_request(req_id):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE material_requests SET status='done' WHERE id=%s", (req_id,))
+            conn.commit()
+
 def get_all_admins():
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -418,19 +517,21 @@ def progress_bar(done, total, length=10):
 
 def kb_admin():
     return ReplyKeyboardMarkup([
-        ["📂 Объекты",      "➕ Новый объект"],
-        ["👷 Сотрудники",   "🔗 Пригласить"],
-        ["⚠️ Проблемы",     "📊 Статус"],
-        ["📄 PDF отчёт",    "📋 Excel отчёт"],
-        ["📈 Статистика",   "🗓 Дайджест"],
+        ["📂 Объекты",       "➕ Новый объект"],
+        ["👷 Сотрудники",    "🔗 Пригласить"],
+        ["⚠️ Проблемы",      "📊 Статус"],
+        ["📄 PDF отчёт",     "📋 Excel отчёт"],
+        ["📈 Статистика",    "🗓 Дайджест"],
+        ["📝 Задачи",        "📦 Заявки на материал"],
     ], resize_keyboard=True)
 
 def kb_worker():
     return ReplyKeyboardMarkup([
-        ["📋 Внести работы",  "📷 Отправить фото"],
-        ["📂 Мои объекты",    "⚠️ Проблема"],
-        ["📊 Статус объекта", "📜 История"],
-        ["📍 Моя геолокация", "🎤 Голосовое"],
+        ["📋 Внести работы",    "📷 Отправить фото"],
+        ["📂 Мои объекты",      "⚠️ Проблема"],
+        ["✅ Мой чек-лист",     "📈 Моя статистика"],
+        ["📦 Запросить материал","📊 Статус объекта"],
+        ["📜 История",          "📍 Геолокация"],
     ], resize_keyboard=True)
 
 def kb_objects_inline(uid):
@@ -929,7 +1030,39 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ Объект полностью настроен!", reply_markup=kb_admin())
         return
 
-    if state == "report_problem":
+    if state == "material_request":
+        obj = get_current_obj(uid)
+        if obj:
+            add_material_request(obj['id'], uid, text)
+            set_state(uid, "")
+            await update.message.reply_text(f"📦 Заявка отправлена администратору:\n«{text}»")
+            # Уведомить администраторов
+            user = get_db_user(uid)
+            for admin_uid in get_all_admins():
+                try:
+                    await ctx.bot.send_message(
+                        admin_uid,
+                        f"📦 *Новая заявка на материал*\n"
+                        f"👤 {user['name']} | 🏗 {obj['name']}\n\n"
+                        f"«{text}»",
+                        parse_mode="Markdown"
+                    )
+                except: pass
+        return
+
+    if state == "new_task_title":
+        ctx.user_data["task_title"] = text
+        set_state(uid, "new_task_worker")
+        workers = get_workers()
+        if not workers:
+            await update.message.reply_text("Монтажников нет.")
+            set_state(uid, "")
+            return
+        buttons = [[InlineKeyboardButton(w['name'], callback_data=f"task_worker:{w['uid']}")] for w in workers]
+        await update.message.reply_text("Выберите монтажника:", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+
         obj = get_current_obj(uid)
         if obj:
             add_problem(obj['id'], text)
@@ -1055,7 +1188,93 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"📷 Отправьте фото — привяжется к *{obj['name']}*", parse_mode="Markdown")
         return
 
-    if text == "📍 Моя геолокация":
+    if text == "✅ Мой чек-лист":
+        tasks = get_tasks(uid, status='open')
+        if not tasks:
+            await update.message.reply_text(
+                "✅ На сегодня задач нет.\n\nАдминистратор назначит задачи через кнопку 📝 Задачи."
+            )
+            return
+        lines = ["✅ *Ваши задачи:*\n"]
+        buttons = []
+        for t in tasks:
+            lines.append(f"🔲 {t['title']}\n   📍 {t['obj_name']}")
+            buttons.append([InlineKeyboardButton(f"✅ Выполнено: {t['title'][:35]}", callback_data=f"done_task:{t['id']}")])
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown",
+                                        reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if text == "📈 Моя статистика":
+        stats_7  = get_worker_stats(uid, days=7)
+        stats_30 = get_worker_stats(uid, days=30)
+        tasks_done = len([t for t in get_tasks(uid) if t['status'] == 'done'])
+        tasks_open = len([t for t in get_tasks(uid) if t['status'] == 'open'])
+        await update.message.reply_text(
+            f"📈 *Моя статистика*\n\n"
+            f"*За 7 дней:*\n"
+            f"🔌 Кабель: {stats_7['total_cable'] or 0} м\n"
+            f"📡 Устройства: {stats_7['total_devices'] or 0} шт\n"
+            f"📋 Записей: {stats_7['records'] or 0}\n\n"
+            f"*За 30 дней:*\n"
+            f"🔌 Кабель: {stats_30['total_cable'] or 0} м\n"
+            f"📡 Устройства: {stats_30['total_devices'] or 0} шт\n"
+            f"📋 Записей: {stats_30['records'] or 0}\n\n"
+            f"*Задачи:*\n"
+            f"✅ Выполнено: {tasks_done}\n"
+            f"🔲 Открытых: {tasks_open}",
+            parse_mode="Markdown"
+        )
+        return
+
+    if text == "📦 Запросить материал":
+        obj = get_current_obj(uid)
+        if not obj:
+            await update.message.reply_text("Сначала выберите объект.")
+            return
+        set_state(uid, "material_request")
+        await update.message.reply_text(
+            f"📦 Введите что нужно заказать для объекта *{obj['name']}*:\n\n"
+            f"Например: «Кабель КПСнг 500м, дымовые датчики ИП212 — 20шт»",
+            parse_mode="Markdown"
+        )
+        return
+
+    if text == "📝 Задачи":
+        if not admin: return
+        workers = get_workers()
+        if not workers:
+            await update.message.reply_text("Монтажников нет. Сначала пригласите через 🔗 Пригласить")
+            return
+        # Показать все открытые задачи + кнопка создать новую
+        all_tasks = get_all_tasks_for_admin()
+        open_tasks = [t for t in all_tasks if t['status'] == 'open']
+        lines = ["📝 *Активные задачи:*\n"]
+        if open_tasks:
+            for t in open_tasks:
+                lines.append(f"🔲 *{t['worker_name']}* — {t['title']}\n   📍 {t['obj_name']}\n")
+        else:
+            lines.append("Открытых задач нет.\n")
+        buttons = [[InlineKeyboardButton("➕ Создать задачу", callback_data="new_task")]]
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown",
+                                        reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if text == "📦 Заявки на материал":
+        if not admin: return
+        requests = get_material_requests(status='new')
+        if not requests:
+            await update.message.reply_text("📦 Новых заявок на материал нет.")
+            return
+        lines = ["📦 *Заявки на материал:*\n"]
+        buttons = []
+        for r in requests:
+            lines.append(f"🔸 *{r['worker_name']}* | {r['obj_name']}\n   {r['text']}\n   📅 {fmt(r['created_at'])}\n")
+            buttons.append([InlineKeyboardButton(f"✅ Закрыть: {r['text'][:35]}", callback_data=f"close_req:{r['id']}")])
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown",
+                                        reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if text == "📍 Геолокация":
         obj = get_current_obj(uid)
         if not obj:
             await update.message.reply_text("Сначала выберите объект.")
@@ -1064,11 +1283,11 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [[KeyboardButton("📍 Отправить геолокацию", request_location=True)]],
             resize_keyboard=True, one_time_keyboard=True
         )
-        await update.message.reply_text("Нажмите кнопку для отправки геолокации:", reply_markup=kb)
+        await update.message.reply_text("Нажмите кнопку:", reply_markup=kb)
         return
 
     if text == "🎤 Голосовое":
-        await update.message.reply_text("🎤 Просто отправьте голосовое сообщение — я его распознаю и зафиксирую.")
+        await update.message.reply_text("🎤 Просто отправьте голосовое сообщение.")
         return
 
     # ── AI ────────────────────────────────────────────────────────────────────
@@ -1134,13 +1353,27 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif data == "assign":
         if not admin: return
+        obj = get_current_obj(uid)
+        if not obj:
+            await q.message.reply_text(
+                "⚠️ Объект не выбран.\n\n"
+                "Сначала выберите объект: нажмите 📂 Объекты → выберите нужный → затем 📊 Статус → 👷 Назначить"
+            )
+            return
         workers = get_workers()
         if not workers:
-            await q.message.reply_text("Монтажников нет.")
+            await q.message.reply_text(
+                "👷 Монтажников пока нет.\n\n"
+                "Пригласите через кнопку 🔗 Пригласить — после регистрации они появятся здесь."
+            )
             return
-        obj = get_current_obj(uid)
+        lines = [f"👷 Назначить на *{obj['name']}*:\n"]
+        for w in workers:
+            stats = get_worker_stats(w['uid'], days=7)
+            lines.append(f"• {w['name']} — {stats['total_cable'] or 0}м за 7 дней")
         buttons = [[InlineKeyboardButton(w['name'], callback_data=f"asgn:{obj['id']}:{w['uid']}")] for w in workers]
-        await q.message.reply_text("Выберите монтажника:", reply_markup=InlineKeyboardMarkup(buttons))
+        await q.message.reply_text("\n".join(lines), parse_mode="Markdown",
+                                   reply_markup=InlineKeyboardMarkup(buttons))
 
     elif data.startswith("asgn:"):
         _, obj_id, worker_uid = data.split(":")
@@ -1153,6 +1386,40 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"📋 Вам назначен объект: *{obj['name']}*\n📍 {obj.get('address') or '—'}",
                 parse_mode="Markdown")
         except: pass
+
+    elif data == "new_task":
+        if not admin: return
+        set_state(uid, "new_task_title")
+        await q.message.reply_text("📝 Введите текст задачи:")
+
+    elif data.startswith("task_worker:"):
+        worker_uid = int(data[12:])
+        obj = get_current_obj(uid)
+        title = ctx.user_data.get("task_title", "")
+        if obj and title:
+            task_id = create_task(obj['id'], worker_uid, uid, title)
+            worker = get_db_user(worker_uid)
+            set_state(uid, "")
+            await q.message.reply_text(f"✅ Задача создана для {worker['name']}:\n«{title}»")
+            try:
+                await ctx.bot.send_message(
+                    worker_uid,
+                    f"📋 *Новая задача от администратора:*\n\n"
+                    f"🔲 {title}\n📍 {obj['name']}\n\n"
+                    f"Нажмите ✅ Мой чек-лист чтобы увидеть все задачи.",
+                    parse_mode="Markdown"
+                )
+            except: pass
+
+    elif data.startswith("done_task:"):
+        task_id = int(data[10:])
+        complete_task(task_id)
+        await q.message.reply_text("✅ Задача выполнена! Молодец!")
+
+    elif data.startswith("close_req:"):
+        req_id = int(data[10:])
+        close_material_request(req_id)
+        await q.message.reply_text("✅ Заявка закрыта.")
 
     elif data == "set_plan":
         if not admin: return
