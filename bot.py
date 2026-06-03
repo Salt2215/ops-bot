@@ -784,9 +784,15 @@ async def cmd_invite(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     token = create_invite(uid)
     bot_user = BOT_USERNAME or (await ctx.bot.get_me()).username
     link = f"https://t.me/{bot_user}?start=invite_{token}"
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("👷 Открыть и зарегистрироваться", url=link)]
+    ])
     await update.message.reply_text(
-        f"🔗 *Ссылка-приглашение:*\n\n`{link}`\n\n⚠️ Одноразовая. Перешлите монтажнику.",
-        parse_mode="Markdown"
+        f"🔗 *Приглашение для монтажника*\n\n"
+        f"Перешлите монтажнику эту кнопку — она работает на телефоне и ПК.\n\n"
+        f"⚠️ Одноразовая — после использования сгорает.",
+        parse_mode="Markdown",
+        reply_markup=keyboard
     )
 
 async def cmd_myid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
